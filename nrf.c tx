@@ -1,0 +1,129 @@
+#include "nrf.h"
+#include"stm32f4xx.h"
+
+/* ================= PIN ================= */
+
+#define CE_HIGH()   (GPIOA->ODR |= (1<<8))
+#define CE_LOW()    (GPIOA->ODR &= ~(1<<8))
+
+#define CSN_HIGH()  (GPIOA->ODR |= (1<<4))
+#define CSN_LOW()   (GPIOA->ODR &= ~(1<<4))
+
+#define W_REGISTER  0x20
+#define R_REGISTER  0x00
+void SPI1_Init(void)
+{
+	//systick initi
+	SysTick->LOAD = 16000 - 1;   // 1 ms
+	SysTick->VAL  = 0;           // reset counter
+
+	// ENABLE (bit0) + CLKSOURCE (bit2)
+	SysTick->CTRL = (1<<0) | (1<<2);
+
+	RCC->AHB1ENR |= (1<<0);   // GPIOA
+    RCC->APB2ENR |= (1<<12);  // SPI1
+
+    // PA5,6,7 -> AF mode
+    GPIOA->MODER &= ~(0x3F << (5*2));
+    GPIOA->MODER |=  (0x2A << (5*2));
+
+    // PA4, PA8 output
+	GPIOA->MODER &= ~((3<<(4*2)) | (3<<(8*2)));
+	GPIOA->MODER |=  ((1<<(4*2)) | (1<<(8*2)));
+	CE_LOW();
+	CSN_HIGH();
+
+    // AF5 (SPI1)
+    GPIOA->AFRL |= (5<<(5*4)) | (5<<(6*4)) | (5<<(7*4));
+
+    SPI1->CR1 = 0;
+    SPI1->CR1 |= (1<<2);  // Master
+    SPI1->CR1 |= (1<<9);  // SSM
+    SPI1->CR1 |= (1<<8);  // SSI
+    SPI1->CR1 |= (3<<3);  // slow baud
+
+    SPI1->CR1 |= (1<<6);  // enable
+}
+uint8_t SPI_Transfer(uint8_t data)
+{
+    while(!(SPI1->SR & (1<<1))); // TXE
+    SPI1->DR = data;
+    while(!(SPI1->SR & (1<<0))); // RXNE
+    return SPI1->DR;
+}
+
+uint8_t NRF_Read_Reg(uint8_t reg)
+{
+    uint8_t val;
+    CSN_LOW();
+    SPI_Transfer(R_REGISTER | reg);
+    val = SPI_Transfer(0xFF);
+    CSN_HIGH();
+    return val;
+}
+
+void NRF_Write_Reg(uint8_t reg, uint8_t val)
+{
+    CSN_LOW();
+    SPI_Transfer(W_REGISTER | reg);
+    SPI_Transfer(val);
+    CSN_HIGH();
+}
+
+void NRF_Write_Buf(uint8_t reg, uint8_t *data, uint8_t len)
+{
+    CSN_LOW();
+    SPI_Transfer(W_REGISTER | reg);
+    for(int i=0;i<len;i++)
+        SPI_Transfer(data[i]);
+    CSN_HIGH();
+}
+void NRF_ReadPayload(uint8_t *data)
+{
+    CSN_LOW();
+    SPI_Transfer(0x61);
+
+    for(int i=0;i<5;i++)
+        data[i] = SPI_Transfer(0xFF);
+
+    CSN_HIGH();
+
+    NRF_Write_Reg(0x07, (1<<6)); // clear flag
+}
+void NRF_Send(uint8_t *data, uint8_t len)
+{
+    CSN_LOW();
+    SPI_Transfer(0xA0); // W_TX_PAYLOAD
+    for(int i=0;i<len;i++)
+        SPI_Transfer(data[i]);
+    CSN_HIGH();
+
+    // Pulse CE
+    CE_HIGH();
+    delay_us(10);
+    CE_LOW();
+}
+void delay_ms(uint32_t ms)
+{
+    for(uint32_t i = 0; i < ms; i++)
+    {
+        SysTick->VAL = 0; // reset
+
+        // wait till COUNTFLAG (bit16) = 1
+        while(!(SysTick->CTRL & (1<<16)));
+    }
+}
+void delay_us(uint32_t us)
+{
+    uint32_t temp = SysTick->LOAD; // backup
+
+    SysTick->LOAD = 16 - 1; // 1 µs (for 16MHz)
+
+    for(uint32_t i = 0; i < us; i++)
+    {
+        SysTick->VAL = 0;
+        while(!(SysTick->CTRL & (1<<16)));
+    }
+
+    SysTick->LOAD = temp; // restore
+}
