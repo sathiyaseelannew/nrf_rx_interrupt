@@ -1,0 +1,33 @@
+#include"nrf.h"
+#include <stdint.h>
+void NRF_Init_TX(void)
+{
+    delay_ms(100);
+
+    uint8_t addr[5] = {'N','O','D','E','1'};
+
+    NRF_Write_Reg(0x00, 0x0E); // PWR_UP, TX
+    NRF_Write_Reg(0x01, 0x00); // no auto ack
+    NRF_Write_Reg(0x02, 0x01); // pipe0
+    NRF_Write_Reg(0x03, 0x03); // 5 byte addr
+    NRF_Write_Reg(0x05, 76);   // channel
+    NRF_Write_Reg(0x06, 0x06); // RF
+
+    NRF_Write_Buf(0x10, addr, 5); // TX_ADDR
+    NRF_Write_Buf(0x0A, addr, 5); // RX_ADDR_P0
+
+    CE_LOW();
+}
+int main(void)
+{
+    SPI1_Init();
+    NRF_Init_TX();
+
+    uint8_t msg[] = "hello12345";
+
+    while(1)
+    {
+        NRF_Send(msg, 10);
+        delay_ms(500);
+    }
+}
