@@ -162,6 +162,14 @@ void NRF_Init_TX(void)
 
     CE_LOW();
 }
+void NRF_Clear_And_Flush_TX(void)
+{
+    NRF_Write_Reg(0x07, 0x70); // Clear RX_DR, TX_DS, MAX_RT
+
+    CSN_LOW();
+    SPI_Transfer(0xE1);        // FLUSH_TX
+    CSN_HIGH();
+}
 
 /* ================= MAIN ================= */
 
@@ -176,10 +184,10 @@ int main(void)
 
     while(1)
     {
+    	NRF_Clear_And_Flush_TX();
         NRF_Send(msg, 10);
-
         UART2_SendString("TX Sent\r\n");
-
+        NRF_Write_Reg(0x07, 0x70); // clear all flags
         delay_ms(1000);
     }
 }
