@@ -1,0 +1,20 @@
+#ifndef NRF_H
+#define NRF_H
+
+#include "stm32f4xx.h"
+
+#define CSN_LOW()   (GPIOA->BSRR = (1<<4) << 16)
+#define CSN_HIGH()  (GPIOA->BSRR = (1<<4))
+
+#define CE_LOW()    (GPIOA->BSRR = (1<<8) << 16)
+#define CE_HIGH()   (GPIOA->BSRR = (1<<8))
+void SPI1_Init(void);
+uint8_t SPI_Transfer(uint8_t data);
+void NRF_Write_Reg(uint8_t reg, uint8_t value);
+void NRF_Write_Buf(uint8_t reg, uint8_t *data, uint8_t len);
+uint8_t NRF_Read_Reg(uint8_t reg);
+void NRF_ReadPayload(uint8_t *data);//len payload bytes
+void NRF_Send(uint8_t *data, uint8_t len);
+void delay_ms(uint32_t ms);
+void delay_us(uint32_t us);
+#endif
