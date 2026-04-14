@@ -1,0 +1,257 @@
+#include "stm32f4xx.h"
+#include <stdint.h>
+
+/* ================= GPIO SAFE MACROS ================= */
+
+#define CE_HIGH()   (GPIOA->BSRR = (1<<8))
+#define CE_LOW()    (GPIOA->BSRR = (1<<8)<<16)
+
+#define CSN_HIGH()  (GPIOA->BSRR = (1<<4))
+#define CSN_LOW()   (GPIOA->BSRR = (1<<4)<<16)
+
+/* ================= NVIC ================= */
+
+#define NVIC_ISER0 (*(volatile uint32_t*)0xE000E100)
+
+/* ================= NRF COMMANDS ================= */
+
+#define W_REGISTER  0x20
+#define R_REGISTER  0x00
+
+/* ================= GLOBAL ================= */
+
+volatile uint8_t read = 0;
+uint8_t data[11];
+
+/* ================= SYSTICK ================= */
+
+void SysTick_Init(void)
+{
+    SysTick->LOAD = 16000 - 1; // 1ms @16MHz
+    SysTick->VAL  = 0;
+    SysTick->CTRL = (1<<0) | (1<<2);
+}
+
+void delay_ms(uint32_t ms)
+{
+    for(uint32_t i=0;i<ms;i++)
+    {
+        SysTick->VAL = 0;
+        while(!(SysTick->CTRL & (1<<16)));
+    }
+}
+
+void delay_us(uint32_t us)
+{
+    uint32_t temp = SysTick->LOAD;
+
+    SysTick->LOAD = 16 - 1;
+
+    for(uint32_t i=0;i<us;i++)
+    {
+        SysTick->VAL = 0;
+        while(!(SysTick->CTRL & (1<<16)));
+    }
+
+    SysTick->LOAD = temp;
+}
+
+/* ================= SPI + GPIO + EXTI INIT ================= */
+
+void SPI1_Init(void)
+{
+    RCC->AHB1ENR |= (1<<0);
+    RCC->APB2ENR |= (1<<12);
+
+    /* PA5,6,7 AF */
+    GPIOA->MODER &= ~(0x3F << (5*2));
+    GPIOA->MODER |=  (0x2A << (5*2));
+
+    GPIOA->AFR[0] &= ~((0xF<<(5*4)) | (0xF<<(6*4)) | (0xF<<(7*4)));
+    GPIOA->AFR[0] |=  ((5<<(5*4)) | (5<<(6*4)) | (5<<(7*4)));
+
+    GPIOA->OSPEEDR |= (2<<(5*2)) | (2<<(6*2)) | (2<<(7*2));
+
+    /* PA4, PA8 output */
+    GPIOA->MODER &= ~((3<<(4*2)) | (3<<(8*2)));
+    GPIOA->MODER |=  ((1<<(4*2)) | (1<<(8*2)));
+
+    CE_LOW();
+    CSN_HIGH();
+
+    /* SPI config */
+    SPI1->CR1 = 0;
+    SPI1->CR1 |= (1<<2);
+    SPI1->CR1 |= (1<<9);
+    SPI1->CR1 |= (1<<8);
+    SPI1->CR1 |= (3<<3);
+    SPI1->CR1 |= (1<<6);
+
+    /* EXTI PA0 (NRF IRQ) */
+    RCC->APB2ENR |= (1<<14);
+
+    GPIOA->MODER &= ~(3<<(0*2));
+
+    SYSCFG->EXTICR[0] &= ~(0xF<<0);
+
+    EXTI->IMR |= (1<<0);
+
+    EXTI->RTSR &= ~(1<<0); // disable rising
+    EXTI->FTSR |= (1<<0);  // falling edge
+
+    NVIC_ISER0 |= (1<<6); // EXTI0 enable
+}
+
+/* ================= SPI ================= */
+
+uint8_t SPI_Transfer(uint8_t data)
+{
+    while(!(SPI1->SR & (1<<1)));
+    SPI1->DR = data;
+    while(!(SPI1->SR & (1<<0)));
+    return SPI1->DR;
+}
+
+/* ================= NRF ================= */
+
+uint8_t NRF_Read_Reg(uint8_t reg)
+{
+    uint8_t val;
+    CSN_LOW();
+    SPI_Transfer(R_REGISTER | reg);
+    val = SPI_Transfer(0xFF);
+    CSN_HIGH();
+    return val;
+}
+
+void NRF_Write_Reg(uint8_t reg, uint8_t val)
+{
+    CSN_LOW();
+    SPI_Transfer(W_REGISTER | reg);
+    SPI_Transfer(val);
+    CSN_HIGH();
+}
+
+void NRF_Write_Buf(uint8_t reg, uint8_t *buf, uint8_t len)
+{
+    CSN_LOW();
+    SPI_Transfer(W_REGISTER | reg);
+    for(int i=0;i<len;i++)
+        SPI_Transfer(buf[i]);
+    CSN_HIGH();
+}
+
+void NRF_ReadPayload(uint8_t *buf)
+{
+    CSN_LOW();
+    SPI_Transfer(0x61);
+
+    for(int i=0;i<10;i++)
+        buf[i] = SPI_Transfer(0xFF);
+
+    CSN_HIGH();
+}
+
+void NRF_Send(uint8_t *buf, uint8_t len)
+{
+    CSN_LOW();
+    SPI_Transfer(0xA0);
+    for(int i=0;i<len;i++)
+        SPI_Transfer(buf[i]);
+    CSN_HIGH();
+
+    CE_HIGH();
+    delay_us(10);
+    CE_LOW();
+}
+
+/* ================= UART ================= */
+
+void UART2_Init(void)
+{
+    RCC->AHB1ENR |= (1<<0);
+    RCC->APB1ENR |= (1<<17);
+
+    GPIOA->MODER &= ~(3<<(2*2));
+    GPIOA->MODER |=  (2<<(2*2));
+
+    GPIOA->AFR[0] |= (7<<(2*4));
+
+    USART2->BRR = 0x0683;
+    USART2->CR1 |= (1<<3);
+    USART2->CR1 |= (1<<13);
+}
+
+void UART2_SendChar(char c)
+{
+    while(!(USART2->SR & (1<<7)));
+    USART2->DR = c;
+}
+
+void UART2_SendString(char *str)
+{
+    while(*str)
+        UART2_SendChar(*str++);
+}
+
+/* ================= NRF RX INIT ================= */
+
+void NRF_Init_RX(void)
+{
+    delay_ms(10);
+
+    uint8_t addr[5] = {'N','O','D','E','1'};
+
+    NRF_Write_Reg(0x00, 0x0F);
+
+    NRF_Write_Reg(0x01, 0x00);
+    NRF_Write_Reg(0x02, 0x01);
+    NRF_Write_Reg(0x03, 0x03);
+    NRF_Write_Reg(0x05, 76);
+    NRF_Write_Reg(0x06, 0x06);
+
+    NRF_Write_Buf(0x0A, addr, 5);
+
+    NRF_Write_Reg(0x11, 10);
+
+    CE_HIGH();
+}
+
+/* ================= ISR ================= */
+
+void EXTI0_IRQHandler(void)
+{
+    if(EXTI->PR & (1<<0))
+    {
+        read = 1;
+        EXTI->PR |= (1<<0);
+    }
+}
+
+/* ================= MAIN ================= */
+
+int main(void)
+{
+    SysTick_Init();
+    UART2_Init();
+    SPI1_Init();
+    NRF_Init_RX();
+
+    while(1)
+    {
+        if(read)
+        {
+            read = 0;
+
+            NRF_ReadPayload(data);
+
+            data[10] = '\0';
+
+            UART2_SendString("RX: ");
+            UART2_SendString((char*)data);
+            UART2_SendString("\r\n");
+
+            NRF_Write_Reg(0x07, (1<<6)); // clear interrupt
+        }
+    }
+}
